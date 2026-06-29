@@ -1,0 +1,12 @@
+backend/data.db
+backend/data.db-journal
+backend/uploads/*
+!backend/uploads/.gitkeep
+frontend/node_modules
+frontend/dist
+frontend/data.db
+frontend/data.db-journal
+frontend/uploads/*
+!frontend/uploads/.gitkeep
+*.log
+.DS_Store
