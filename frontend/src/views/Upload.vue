@@ -9,9 +9,9 @@
         </div>
       </div>
 
-      <el-row :gutter="16" class="entry-grid">
+      <el-row :gutter="16" class="entry-grid" align="top">
         <el-col :xs="24" :md="12">
-          <div class="entry-card">
+          <div class="entry-card entry-card--primary">
             <div class="entry-card-title">📷 上传新商品图</div>
             <el-upload
               drag
@@ -63,7 +63,7 @@
         </el-col>
 
         <el-col :xs="24" :md="12">
-          <div class="entry-card">
+          <div class="entry-card entry-card--compact">
             <div class="entry-card-title">📦 从已有产品选</div>
             <template v-if="products.length">
               <el-select
@@ -490,9 +490,16 @@ onMounted(async () => {
   border: 1px solid #ebeef5;
   border-radius: 8px;
   padding: 20px;
-  height: 100%;
   display: flex;
   flex-direction: column;
+}
+.entry-card--primary {
+  height: 100%;
+  min-height: 360px;
+}
+.entry-card--compact {
+  height: auto;
+  align-self: flex-start;
 }
 .entry-card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
 .entry-card-model { margin-top: 16px; }
