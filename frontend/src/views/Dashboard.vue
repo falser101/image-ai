@@ -26,13 +26,13 @@
       <el-col :span="10">
         <div class="page-card">
           <h3 style="margin-top:0">快速开始</h3>
-          <el-steps direction="vertical" :active="3">
+          <el-steps direction="vertical" :active="0">
             <el-step title="上传产品原图" description="支持 JPG / PNG，自动解析产品" />
             <el-step title="AI 自动提取卖点与 Prompt" description="视觉模型识别并写入卖点表" />
             <el-step title="选择模型 + 风格预设生成" description="调用生图模型输出电商级图片" />
             <el-step title="保存到图库，筛选/下载" description="图库支持多维筛选与下载" />
           </el-steps>
-          <el-button type="primary" style="margin-top:16px" @click="$router.push('/upload')">立即开始</el-button>
+          <el-button type="primary" size="large" style="margin-top:16px" @click="$router.push('/upload')">立即开始</el-button>
         </div>
       </el-col>
     </el-row>

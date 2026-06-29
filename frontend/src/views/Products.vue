@@ -102,6 +102,7 @@
                 </el-tag>
               </div>
               <div class="src-card-actions">
+                <el-button text type="success" size="small" @click="gotoGenerate(img)">去生图</el-button>
                 <el-button text type="primary" size="small" @click="copyPrompt(img)">复制 Prompt</el-button>
                 <el-button text type="danger" size="small" @click="removeSourceImage(img)">删除</el-button>
               </div>
@@ -197,9 +198,11 @@ const gotoGallery = () => {
   if (!detail.value) return
   router.push({ name: 'Gallery', query: { productId: detail.value.id } })
 }
-const gotoGenerate = () => {
+const gotoGenerate = (img) => {
   if (!detail.value) return
-  router.push({ name: 'Upload', query: { productId: detail.value.id } })
+  const query = { productId: detail.value.id }
+  if (img) query.sourceImageId = img.id
+  router.push({ name: 'Upload', query })
 }
 
 const openCreate = () => { form.value = { name: '' }; dlg.value = true }
