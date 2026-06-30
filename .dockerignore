@@ -1,0 +1,15 @@
+.git
+.gitignore
+.github
+.idea
+.vscode
+.claude
+data
+uploads
+**/data.db
+**/data.db-journal
+**/uploads
+**/node_modules
+**/dist
+*.log
+.DS_Store

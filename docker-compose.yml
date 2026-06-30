@@ -1,0 +1,47 @@
+name: image-ai
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: image-ai-backend:latest
+    container_name: image-ai-backend
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      DB_PATH: /app/data/data.db
+      UPLOAD_DIR: /app/data/uploads
+      # JWT_SECRET / ADMIN_PASSWORD 必填（.env 缺失时 compose 启动直接报错）
+      JWT_SECRET: ${JWT_SECRET:?must set JWT_SECRET in .env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?must set ADMIN_PASSWORD in .env}
+    volumes:
+      # bind mount 到项目根 data/，SQLite + uploads 都落在这里，备份只 tar 这一个目录
+      - ./data:/app/data
+    networks:
+      - image-ai
+    # 注意：故意不写 ports。backend 只在 image-ai 网络里被前端访问。
+    # （要看日志用 `docker compose logs backend`。）
+
+  frontend:
+    build:
+      context: ./frontend
+    image: image-ai-frontend:latest
+    container_name: image-ai-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - image-ai
+    # 同上：故意不写 ports。外部通过 nginx-proxy-manager 反代到容器名 image-ai-frontend:80。
+    # 如果你临时想直接访问本机（不开反代），把下面 3 行取消注释：
+    # ports:
+    #   - "127.0.0.1:8080:80"
+
+networks:
+  image-ai:
+    # 显式命名：固定名 <project>_image-ai（项目目录前缀默认是 image-ai，即 image-ai_image-ai）
+    # 让外部 nginx-proxy-manager 等能 docker network connect 进来解析容器名
+    name: image-ai_image-ai
+    driver: bridge
