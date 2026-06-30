@@ -229,9 +229,10 @@
 
 <script setup>
 import { onMounted, ref, computed, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { modelConfigApi } from '@/api'
 import http from '@/api/http'
+import { confirmDelete } from '@/utils/confirmDelete'
 
 const list = ref([])
 const dlg = ref(false)
@@ -453,8 +454,17 @@ const toggle = async (row, v) => {
   ElMessage.success('已更新'); load()
 }
 const remove = async (row) => {
-  await ElMessageBox.confirm('确定删除？', '提示', { type: 'warning' })
-  await modelConfigApi.remove(row.id); load()
+  try {
+    await confirmDelete({
+      label: '模型名',
+      expected: row.name,
+      title: `将永久删除模型配置「${row.name}」`,
+      description: '之后「上传与生图」「产品原图 AI 解析」将无法再选该模型。',
+    })
+  } catch { return }
+  await modelConfigApi.remove(row.id)
+  ElMessage.success('已删除')
+  load()
 }
 onMounted(async () => {
   await loadProviders()

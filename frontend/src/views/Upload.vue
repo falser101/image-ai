@@ -13,18 +13,37 @@
         <el-col :xs="24" :md="12">
           <div class="entry-card entry-card--primary">
             <div class="entry-card-title">📷 上传新商品图</div>
+
+            <!-- 产品名输入：必填且不能重复 -->
+            <div class="entry-card-name">
+              <div class="entry-card-model-label">
+                产品名 <span style="color:var(--el-color-danger)">*</span>
+              </div>
+              <el-input
+                v-model="newProductName"
+                :status="nameChecker.inputStatus()"
+                placeholder="给商品起个名（公司内不允许重复）"
+                maxlength="60"
+                show-word-limit
+                clearable
+              />
+              <div v-if="nameChecker.message.value" class="name-hint" :class="`is-${nameChecker.state.value}`">
+                {{ nameChecker.message.value }}
+              </div>
+            </div>
+
             <el-upload
               drag
               :show-file-list="false"
               :http-request="handleNewUpload"
               accept="image/*"
               :before-upload="beforeUpload"
-              :disabled="uploading"
+              :disabled="uploading || !canUploadNew"
               style="width:100%"
             >
               <el-icon class="el-icon--upload" style="font-size:48px;color:#909399"><upload-filled /></el-icon>
               <div class="el-upload__text">
-                {{ uploading ? '上传与 AI 解析中…' : '把商品原图拖到这里，或<em>点击上传</em>' }}
+                {{ uploading ? '上传与 AI 解析中…' : (canUploadNew ? '把商品原图拖到这里，或<em>点击上传</em>' : '请先在上方填写可用产品名') }}
               </div>
               <template #tip>
                 <div class="text-muted" style="font-size:12px;line-height:1.6">
@@ -63,8 +82,8 @@
         </el-col>
 
         <el-col :xs="24" :md="12">
-          <div class="entry-card entry-card--compact">
-            <div class="entry-card-title">📦 从已有产品选</div>
+          <div class="entry-card entry-card--primary">
+            <div class="entry-card-title">📦 已有产品上传新图</div>
             <template v-if="products.length">
               <el-select
                 v-model="pickedProductId"
@@ -72,12 +91,57 @@
                 filterable
                 size="large"
                 style="width:100%"
-                @change="onPickProduct"
+                @change="loadProduct"
               >
                 <el-option v-for="p in products" :key="p.id" :label="p.name" :value="p.id" />
               </el-select>
-              <div class="text-muted" style="font-size:12px;margin-top:10px">
-                选了之后会让你挑一张原图
+
+              <!-- 选中产品后给出两条路径：上传新原图 / 选已有原图 -->
+              <div v-if="currentProduct" class="existing-product">
+                <div class="existing-product-summary">
+                  已选：<b>{{ currentProduct.name }}</b>
+                  <span class="text-muted" style="font-weight:normal;margin-left:6px">
+                    ({{ sourceImages.length || 0 }} 张原图)
+                  </span>
+                </div>
+
+                <div class="existing-product-actions">
+                  <!-- 路径 1：上传新原图到该产品，自动 AI 解析 -->
+                  <el-upload
+                    :show-file-list="false"
+                    :http-request="handleExistingUpload"
+                    accept="image/*"
+                    :before-upload="beforeUpload"
+                    :disabled="uploading"
+                    class="existing-upload"
+                  >
+                    <el-button
+                      type="primary"
+                      :loading="uploading"
+                      style="width:100%"
+                    >📤 上传新原图到该产品</el-button>
+                  </el-upload>
+
+                  <!-- 路径 2：从已有原图里挑一张去生图 -->
+                  <el-button
+                    style="width:100%"
+                    :disabled="!sourceImages.length"
+                    @click="onPickFromExisting"
+                  >
+                    🖼 选已有原图生成 ({{ sourceImages.length || 0 }})
+                  </el-button>
+                </div>
+
+                <div
+                  v-if="!sourceImages.length"
+                  class="text-muted"
+                  style="font-size:12px;margin-top:10px;line-height:1.5"
+                >
+                  该产品还没有原图，请用上方按钮上传一张
+                </div>
+              </div>
+              <div v-else class="text-muted" style="font-size:12px;margin-top:14px">
+                选个产品，然后上传新原图或挑已有原图生成
               </div>
             </template>
             <el-empty v-else description="还没有任何产品" :image-size="80">
@@ -261,6 +325,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { aiApi, modelConfigApi, styleApi, productApi, sourceImageApi } from '@/api'
+import { useNameChecker } from '@/utils/useNameChecker'
 
 const route = useRoute()
 const router = useRouter()
@@ -271,6 +336,13 @@ const products = ref([])
 const imageModels = ref([])
 const visionModels = ref([])
 const uploadVisionModelId = ref(null)
+const newProductName = ref('') // 新建产品的自定义名（必填且不能重复）
+// 实时查重：必填 + 唯一都满足才允许继续上传
+const nameChecker = useNameChecker(
+  newProductName,
+  (name) => productApi.checkName(name).then(r => r.data || r),
+  { debounceMs: 300 }
+)
 const styles = ref([])
 const sourceImages = ref([])
 const currentProduct = ref(null)
@@ -313,6 +385,12 @@ const canGenerate = computed(() =>
   Boolean(form.value.productId && form.value.sourceImageId && form.value.modelConfigId)
 )
 
+// 「上传新商品图」按钮的可用条件：产品名必填 + 查重可用
+const canUploadNew = computed(() => {
+  if (!newProductName.value.trim()) return false
+  return nameChecker.canSubmit()
+})
+
 // ============== Stage transitions ==============
 const goEntry = () => {
   stage.value = 'entry'
@@ -332,24 +410,39 @@ const goChooseImage = () => {
   generated.value = null
 }
 
-const onPickProduct = async (id) => {
-  if (!id) return
+// loadProduct 把产品详情拉进 state，不做导航。stage 1 右卡用：
+// 用户选中产品后只更新数据，由两个按钮决定下一步（上传 / 选已有）。
+const loadProduct = async (id) => {
+  if (!id) {
+    currentProduct.value = null
+    sourceImages.value = []
+    return
+  }
   loadingSource.value = true
   try {
     currentProduct.value = await productApi.get(id)
     sourceImages.value = currentProduct.value.sourceImages || []
-    if (sourceImages.value.length === 0) {
-      ElMessage.warning('该产品还没有原图，请先在「产品」页上传')
-      goEntry()
-      return
-    }
-    if (sourceImages.value.length === 1) {
-      pickSource(sourceImages.value[0])
-    } else {
-      stage.value = 'chooseImage'
-    }
+  } catch (e) {
+    ElMessage.error(e?.message || '加载产品失败')
+    currentProduct.value = null
+    sourceImages.value = []
   } finally {
     loadingSource.value = false
+  }
+}
+
+// onPickFromExisting 把「选已有原图去生成」封装成一个按钮事件。
+// 0 张：按钮 disabled；1 张：直接进生成；>=2：进 chooseImage 选图。
+const onPickFromExisting = () => {
+  if (!currentProduct.value) return
+  if (sourceImages.value.length === 0) {
+    ElMessage.warning('该产品还没有原图，请先上传一张')
+    return
+  }
+  if (sourceImages.value.length === 1) {
+    pickSource(sourceImages.value[0])
+  } else {
+    stage.value = 'chooseImage'
   }
 }
 
@@ -373,9 +466,22 @@ const handleNewUpload = async ({ file }) => {
   uploading.value = true
   uploadError.value = ''
   try {
-    // 1) 用文件名（去后缀）当产品名，自动建立产品
-    const rawName = (file.name || '').replace(/\.[^.]+$/, '').trim().slice(0, 60)
-    const name = rawName || `商品-${new Date().toLocaleDateString('zh-CN')}`
+    // 1) 产品名必填且不能重复：用户输入优先；空 / 重复 / 校验未过都阻断上传
+    const inputName = (newProductName.value || '').trim().slice(0, 60)
+    if (!inputName) {
+      ElMessage.warning('请先填写产品名')
+      uploading.value = false
+      return
+    }
+    if (!nameChecker.canSubmit()) {
+      const msg = nameChecker.state.value === 'duplicate'
+        ? `已有同名产品：「${inputName}」，换一个名字吧`
+        : (nameChecker.message.value || '产品名校验未通过')
+      ElMessage.warning(msg)
+      uploading.value = false
+      return
+    }
+    const name = inputName
     const product = await productApi.create({ name })
 
     // 2) 上传 + AI 解析（不指定 vision 模型时，后端按 fallback 跑 mock 或默认模型）
@@ -395,9 +501,47 @@ const handleNewUpload = async ({ file }) => {
     form.value.sourceImageId = img.id
     form.value.prompt = r.prompt || ''
     stage.value = 'generate'
+    newProductName.value = '' // 消费完清空，避免下次误用
 
     // 异步刷新侧栏/下拉里的产品列表（不阻塞当前流程）
     productApi.list().then(ps => { products.value = ps }).catch(() => {})
+  } catch (e) {
+    uploadError.value = e?.message || '上传或解析失败，请重试'
+  } finally {
+    uploading.value = false
+  }
+}
+
+// ============== Upload new source image to an existing product ==============
+// 复用同一套后端接口 sourceImageApi.upload(productId, file, modelConfigId)。
+// 成功解析后直接跳到 generate 阶段，把这张新图作为源图。
+const handleExistingUpload = async ({ file }) => {
+  if (!currentProduct.value) {
+    ElMessage.warning('请先选择产品')
+    return
+  }
+  uploading.value = true
+  uploadError.value = ''
+  try {
+    const r = await sourceImageApi.upload(
+      currentProduct.value.id,
+      file,
+      uploadVisionModelId.value || null
+    )
+    // 把新图塞进当前 sourceImages 列表，让用户后续能在 generate 页看到
+    const img = {
+      id: r.image.id,
+      url: r.image.url,
+      prompt: r.prompt || '',
+      sellingPoints: r.sellingPoints || [],
+      analyzed: true,
+    }
+    sourceImages.value = [...sourceImages.value, img]
+    form.value.productId = currentProduct.value.id
+    form.value.sourceImageId = img.id
+    form.value.prompt = r.prompt || ''
+    stage.value = 'generate'
+    ElMessage.success(`已上传并解析，新增 ${r.sellingPoints?.length || 0} 条卖点`)
   } catch (e) {
     uploadError.value = e?.message || '上传或解析失败，请重试'
   } finally {
@@ -465,12 +609,18 @@ onMounted(async () => {
   // 从 ?productId=… 跳转过来时，自动选中产品并加载它的原图
   const pid = parseInt(route.query.productId)
   if (!isNaN(pid) && products.value.some(p => p.id === pid)) {
-    await onPickProduct(pid)
+    await loadProduct(pid)
     // 如果 URL 还指定了具体原图，直接选中它（多图产品也能一键直达）
     const sid = parseInt(route.query.sourceImageId)
     if (!isNaN(sid)) {
       const target = sourceImages.value.find(img => img.id === sid)
-      if (target) pickSource(target)
+      if (target) {
+        pickSource(target)
+      } else {
+        onPickFromExisting()
+      }
+    } else {
+      onPickFromExisting()
     }
   }
 })
@@ -497,13 +647,32 @@ onMounted(async () => {
   height: 100%;
   min-height: 360px;
 }
-.entry-card--compact {
-  height: auto;
-  align-self: flex-start;
-}
 .entry-card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+.entry-card-name { margin-bottom: 12px; }
 .entry-card-model { margin-top: 16px; }
 .entry-card-model-label { font-size: 12px; color: #909399; margin-bottom: 4px; }
+
+/* 产品名校验状态文案 */
+.name-hint { font-size: 12px; margin-top: 4px; line-height: 1.4; }
+.name-hint.is-ok        { color: var(--el-color-success); }
+.name-hint.is-checking  { color: var(--el-color-warning); }
+.name-hint.is-duplicate,
+.name-hint.is-invalid   { color: var(--el-color-danger); }
+.name-hint.is-error     { color: var(--el-color-danger); }
+
+/* 已有产品区：选中后给出两条路径 */
+.existing-product { margin-top: 16px; display: flex; flex-direction: column; }
+.existing-product-summary {
+  font-size: 13px; margin-bottom: 12px;
+  padding: 8px 10px; background: #f0f5ff; border-radius: 4px;
+  border: 1px dashed #c0d4f5;
+}
+.existing-product-actions {
+  display: flex; flex-direction: column; gap: 8px;
+}
+/* el-upload 默认会渲染一个透明的 trigger 包装层；这里让它不抢布局 */
+.existing-upload { display: block; }
+.existing-upload .el-upload { display: block; }
 
 .src-pick {
   display: grid;

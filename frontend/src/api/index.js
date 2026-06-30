@@ -11,7 +11,9 @@ export const productApi = {
   list: (params) => http.get('/products', { params }),
   create: (data) => http.post('/products', data),
   get: (id) => http.get(`/products/${id}`),
-  remove: (id) => http.delete(`/products/${id}`)
+  update: (id, data) => http.put(`/products/${id}`, data),
+  remove: (id) => http.delete(`/products/${id}`),
+  checkName: (name) => http.get('/products/check-name', { params: { name } }),
 }
 
 export const sellingPointApi = {
@@ -81,5 +83,12 @@ export const userApi = {
 }
 
 export const logApi = {
-  list: (params) => http.get('/operation-logs', { params })
+  list: (params) => http.get('/operation-logs', { params }),
+  stats: (params) => http.get('/operation-logs/stats', { params }),
+}
+
+export const promptSettingsApi = {
+  get: () => http.get('/prompt-settings'),
+  update: (data) => http.put('/prompt-settings', data),
+  reset: () => http.post('/prompt-settings/reset'),
 }

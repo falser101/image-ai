@@ -19,7 +19,9 @@
             <el-table-column prop="prompt" label="Prompt" show-overflow-tooltip />
             <el-table-column prop="modelName" label="模型" width="140" />
             <el-table-column prop="styleName" label="风格" width="100" />
-            <el-table-column prop="createdAt" label="时间" width="170" />
+            <el-table-column label="时间" width="170">
+              <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+            </el-table-column>
           </el-table>
         </div>
       </el-col>
@@ -42,6 +44,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { productApi, imageApi, galleryApi, sellingPointApi } from '@/api'
+import { formatDateTime } from '@/utils/format'
 
 const stats = ref({ products: 0, images: 0, gallery: 0, points: 0 })
 const latestGallery = ref([])

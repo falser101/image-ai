@@ -34,12 +34,17 @@
           <span v-else class="text-muted" style="font-size:12px">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="createdAt" label="创建时间" width="180" />
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column label="创建时间" width="180">
+        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
-          <el-button text type="primary" @click="openDetail(row)">查看产品</el-button>
-          <el-button text @click="openGallery(row)">图库</el-button>
-          <el-button text type="danger" @click="remove(row)">删除</el-button>
+          <div class="row-actions">
+            <el-button text type="primary" @click="openDetail(row)">查看</el-button>
+            <el-button text @click="openGallery(row)">图库</el-button>
+            <el-button text @click="openEdit(row)">改名</el-button>
+            <el-button text type="danger" @click="remove(row)">删除</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -48,12 +53,49 @@
     <el-dialog v-model="dlg" title="新建产品" width="500px">
       <el-form :model="form" label-width="80px">
         <el-form-item label="名称" required>
-          <el-input v-model="form.name" placeholder="给产品起个名" @keyup.enter="submit" />
+          <el-input
+            v-model="dlgName"
+            placeholder="给产品起个名（公司内不允许重复）"
+            maxlength="60"
+            show-word-limit
+            :status="createChecker.inputStatus()"
+            @keyup.enter="submit"
+          />
+          <div v-if="createChecker.message.value" class="name-hint" :class="`is-${createChecker.state.value}`">
+            {{ createChecker.message.value }}
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dlg = false">取消</el-button>
-        <el-button type="primary" :disabled="!form.name" @click="submit">创建</el-button>
+        <el-button type="primary" :disabled="!createChecker.canSubmit()" @click="submit">创建</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 改名 -->
+    <el-dialog v-model="editDlg" title="修改产品名" width="500px">
+      <el-form :model="editForm" label-width="80px">
+        <el-form-item label="产品名" required>
+          <el-input
+            v-model="editForm.name"
+            placeholder="给产品起个新名"
+            maxlength="60"
+            show-word-limit
+            @keyup.enter="submitEdit"
+          />
+        </el-form-item>
+        <el-form-item v-if="editingId" label="产品 ID">
+          <span class="text-muted" style="font-size:12px">#{{ editingId }}</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDlg = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="!editForm.name.trim() || editSubmitting"
+          :loading="editSubmitting"
+          @click="submitEdit"
+        >保存</el-button>
       </template>
     </el-dialog>
 
@@ -68,7 +110,7 @@
           </div>
           <div class="summary-row">
             <span class="text-muted" style="font-size:12px">创建时间</span>
-            <span>{{ detail.createdAt }}</span>
+            <span>{{ formatDateTime(detail.createdAt) }}</span>
           </div>
           <div class="summary-row">
             <span class="text-muted" style="font-size:12px">原图数</span>
@@ -168,14 +210,30 @@
 <script setup>
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { productApi, imageApi, galleryApi, modelConfigApi, sourceImageApi } from '@/api'
+import { formatDateTime } from '@/utils/format'
+import { confirmDelete } from '@/utils/confirmDelete'
+import { useNameChecker } from '@/utils/useNameChecker'
 
 const router = useRouter()
 const list = ref([])
 const dlg = ref(false)
-const form = ref({ name: '' })
+// 弹窗里单独搞一个 dlgName，避免 form.name 嵌套对象触发 watch；
+// 实时查重 + 必填 + 不重复都满足才允许「创建」。
+const dlgName = ref('')
+const createChecker = useNameChecker(
+  dlgName,
+  (name) => productApi.checkName(name).then(r => r.data || r),
+  { debounceMs: 300 }
+)
+
+// 改名
+const editDlg = ref(false)
+const editForm = ref({ name: '' })
+const editingId = ref(null)
+const editSubmitting = ref(false)
 
 // 详情抽屉
 const detailDrawer = ref(false)
@@ -205,13 +263,46 @@ const gotoGenerate = (img) => {
   router.push({ name: 'Upload', query })
 }
 
-const openCreate = () => { form.value = { name: '' }; dlg.value = true }
+const openCreate = () => {
+  dlgName.value = ''
+  dlg.value = true
+}
 const submit = async () => {
-  if (!form.value.name) { ElMessage.warning('请输入产品名'); return }
-  await productApi.create(form.value)
-  dlg.value = false
-  ElMessage.success('已创建')
-  load()
+  const name = dlgName.value.trim()
+  if (!name) { ElMessage.warning('请输入产品名'); return }
+  if (!createChecker.canSubmit()) {
+    ElMessage.warning(createChecker.message.value || '产品名校验未通过')
+    return
+  }
+  try {
+    await productApi.create({ name })
+    dlg.value = false
+    ElMessage.success('已创建')
+    load()
+  } catch (e) {
+    // 后端兜底（比如并发抢名）：错误提示在 http 拦截器已弹
+  }
+}
+
+// 改名
+const openEdit = (row) => {
+  editingId.value = row.id
+  editForm.value = { name: row.name || '' }
+  editDlg.value = true
+}
+const submitEdit = async () => {
+  if (!editingId.value) return
+  const name = editForm.value.name.trim()
+  if (!name) { ElMessage.warning('产品名不能为空'); return }
+  editSubmitting.value = true
+  try {
+    await productApi.update(editingId.value, { name })
+    editDlg.value = false
+    ElMessage.success('已改名')
+    load()
+  } finally {
+    editSubmitting.value = false
+  }
 }
 
 const openDetail = async (row) => {
@@ -224,7 +315,14 @@ const openDetail = async (row) => {
 }
 
 const remove = async (row) => {
-  await ElMessageBox.confirm('确定删除该产品？（其下原图与生成图保留但不再关联）', '提示', { type: 'warning' })
+  try {
+    await confirmDelete({
+      label: '产品名',
+      expected: row.name,
+      title: `将永久删除产品「${row.name}」`,
+      description: '其下原图与生成图保留但不再关联该产品（共享公司图库可继续查看）。',
+    })
+  } catch { return }
   await productApi.remove(row.id)
   ElMessage.success('已删除')
   load()
@@ -256,7 +354,14 @@ const uploadSourceImage = async () => {
 }
 
 const removeSourceImage = async (img) => {
-  await ElMessageBox.confirm(`确定删除这张原图？关联的 AI 卖点会一并保留`, '提示', { type: 'warning' })
+  try {
+    await confirmDelete({
+      label: '原图 ID',
+      expected: img.id,
+      title: `将永久删除原图 #${img.id}`,
+      description: '关联的 AI 卖点会一并保留，其他员工上传的原图不受影响。',
+    })
+  } catch { return }
   await imageApi.remove(img.id)
   ElMessage.success('已删除')
   detail.value = await productApi.get(detail.value.id)
@@ -282,6 +387,25 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.name-hint { font-size: 12px; line-height: 1.4; padding: 4px 0; }
+.name-hint.is-ok        { color: var(--el-color-success); }
+.name-hint.is-checking  { color: var(--el-color-warning); }
+.name-hint.is-duplicate,
+.name-hint.is-invalid   { color: var(--el-color-danger); }
+.name-hint.is-error     { color: var(--el-color-danger); }
+
+.page-card :deep(.el-table .row-actions) {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
+}
+.page-card :deep(.el-table .row-actions .el-button) {
+  padding: 0 6px;
+}
+.page-card :deep(.el-table .row-actions .el-button + .el-button) {
+  margin-left: 0;
+}
 .name-link {
   color: var(--el-color-primary);
   cursor: pointer;

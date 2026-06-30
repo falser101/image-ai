@@ -4,14 +4,23 @@
       <div class="brand gradient-text">AI 产品图生成</div>
       <el-menu :default-active="active" router :collapse="false" background-color="transparent" text-color="#c9d1d9" active-text-color="#fff">
         <el-menu-item index="/dashboard"><el-icon><DataBoard/></el-icon><span>工作台</span></el-menu-item>
-        <el-menu-item index="/upload"><el-icon><Upload/></el-icon><span>上传与生图</span></el-menu-item>
-        <el-menu-item index="/gallery"><el-icon><Picture/></el-icon><span>图库</span></el-menu-item>
-        <el-menu-item index="/products"><el-icon><Goods/></el-icon><span>产品</span></el-menu-item>
-        <el-menu-item v-if="user.isAdmin" index="/styles"><el-icon><Brush/></el-icon><span>风格预设</span></el-menu-item>
-        <el-menu-item v-if="user.isAdmin" index="/models"><el-icon><Connection/></el-icon><span>模型配置</span></el-menu-item>
-        <el-menu-item v-if="user.isAdmin" index="/oss"><el-icon><Coin/></el-icon><span>OSS 配置</span></el-menu-item>
-        <el-menu-item v-if="user.isAdmin" index="/users"><el-icon><User/></el-icon><span>员工管理</span></el-menu-item>
-        <el-menu-item v-if="user.isAdmin" index="/logs"><el-icon><Document/></el-icon><span>操作日志</span></el-menu-item>
+
+        <el-sub-menu index="workspace">
+          <template #title><el-icon><Box/></el-icon><span>工作区</span></template>
+          <el-menu-item index="/upload"><el-icon><Upload/></el-icon><span>上传与生图</span></el-menu-item>
+          <el-menu-item index="/products"><el-icon><Goods/></el-icon><span>产品</span></el-menu-item>
+          <el-menu-item index="/gallery"><el-icon><Picture/></el-icon><span>图库</span></el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu v-if="user.isAdmin" index="admin">
+          <template #title><el-icon><Setting/></el-icon><span>系统管理</span></template>
+          <el-menu-item index="/prompts"><el-icon><ChatDotRound/></el-icon><span>提示词配置</span></el-menu-item>
+          <el-menu-item index="/models"><el-icon><Connection/></el-icon><span>模型配置</span></el-menu-item>
+          <el-menu-item index="/styles"><el-icon><Brush/></el-icon><span>风格预设</span></el-menu-item>
+          <el-menu-item index="/oss"><el-icon><Coin/></el-icon><span>OSS 配置</span></el-menu-item>
+          <el-menu-item index="/users"><el-icon><User/></el-icon><span>员工管理</span></el-menu-item>
+          <el-menu-item index="/logs"><el-icon><Document/></el-icon><span>操作日志</span></el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </aside>
     <section class="content">
@@ -73,6 +82,7 @@ const titles = {
   '/upload': '上传与生图',
   '/gallery': '图库',
   '/products': '产品',
+  '/prompts': '提示词配置',
   '/styles': '风格预设',
   '/models': '模型配置',
   '/oss': 'OSS 配置',

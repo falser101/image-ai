@@ -1,27 +1,36 @@
 <template>
   <div class="page-card">
     <div class="flex items-center justify-between mb-12">
-      <el-button type="primary" @click="openCreate">新建员工</el-button>
+      <div>
+        <el-button type="primary" @click="openCreate">新建员工</el-button>
+        <span class="text-muted" style="margin-left:12px;font-size:12px">
+          共 {{ list.length }} 个员工 · 账号创建后不可改
+        </span>
+      </div>
     </div>
-    <el-table :data="list" stripe>
-      <el-table-column prop="id" label="ID" width="60" />
-      <el-table-column prop="username" label="账号" width="140" />
-      <el-table-column prop="nickname" label="姓名" width="140" />
-      <el-table-column prop="role" label="角色" width="100">
+    <el-table :data="list" stripe style="width:100%">
+      <el-table-column prop="id" label="ID" width="80" />
+      <el-table-column prop="username" label="账号" width="180" />
+      <el-table-column prop="nickname" label="姓名" min-width="200" />
+      <el-table-column prop="role" label="角色" width="120">
         <template #default="{ row }">
           <el-tag :type="row.role === 'admin' ? 'danger' : 'primary'">{{ row.role === 'admin' ? '管理员' : '员工' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="状态" width="100">
+      <el-table-column prop="status" label="状态" width="120">
         <template #default="{ row }">
           <el-tag :type="row.status === 'active' ? 'success' : 'info'">{{ row.status === 'active' ? '正常' : '停用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="createdAt" label="创建时间" width="180" />
-      <el-table-column label="操作" width="200">
+      <el-table-column label="创建时间" width="200">
+        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="160" fixed="right">
         <template #default="{ row }">
-          <el-button text @click="openEdit(row)">编辑</el-button>
-          <el-button text type="danger" :disabled="row.id === 1" @click="remove(row)">删除</el-button>
+          <div class="row-actions">
+            <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button text type="danger" :disabled="row.id === 1" @click="remove(row)">删除</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -55,8 +64,10 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { userApi } from '@/api'
+import { formatDateTime } from '@/utils/format'
+import { confirmDelete } from '@/utils/confirmDelete'
 
 const list = ref([])
 const dlg = ref(false)
@@ -71,8 +82,32 @@ const submit = async () => {
   dlg.value = false; ElMessage.success('已保存'); load()
 }
 const remove = async (row) => {
-  await ElMessageBox.confirm(`确定删除员工 ${row.username}？`, '提示', { type: 'warning' })
-  await userApi.remove(row.id); load()
+  try {
+    await confirmDelete({
+      label: '账号',
+      expected: row.username,
+      title: `将永久删除员工「${row.username}」`,
+      description: '员工账号会被删除，其创建的产品 / 原图 / 生成图关联仍保留但不再归属该员工。',
+    })
+  } catch { return }
+  await userApi.remove(row.id)
+  ElMessage.success('已删除')
+  load()
 }
 onMounted(load)
 </script>
+
+<style scoped>
+.page-card :deep(.el-table .row-actions) {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
+}
+.page-card :deep(.el-table .row-actions .el-button) {
+  padding: 0 6px;
+}
+.page-card :deep(.el-table .row-actions .el-button + .el-button) {
+  margin-left: 0;
+}
+</style>

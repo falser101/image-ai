@@ -11,9 +11,6 @@
         </el-form-item>
         <el-button type="primary" size="large" style="width:100%" :loading="loading" @click="submit">登录</el-button>
       </el-form>
-      <div class="text-muted" style="margin-top:16px;font-size:12px;text-align:center;">
-        默认管理员: <b>admin / admin123</b>
-      </div>
     </div>
   </div>
 </template>
@@ -28,7 +25,7 @@ import { authApi } from '@/api'
 const router = useRouter()
 const user = useUserStore()
 const loading = ref(false)
-const form = ref({ username: 'admin', password: 'admin123' })
+const form = ref({ username: '', password: '' })
 const submit = async () => {
   if (!form.value.username || !form.value.password) {
     ElMessage.warning('请填写账号密码'); return

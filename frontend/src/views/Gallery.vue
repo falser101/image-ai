@@ -58,8 +58,9 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { galleryApi, modelConfigApi, styleApi, productApi } from '@/api'
+import { confirmDelete } from '@/utils/confirmDelete'
 
 const route = useRoute()
 const list = ref([])
@@ -76,7 +77,14 @@ const load = async () => {
   } finally { loading.value = false }
 }
 const remove = async (item) => {
-  await ElMessageBox.confirm('确定删除该图片？', '提示', { type: 'warning' })
+  try {
+    await confirmDelete({
+      label: '图库项 ID',
+      expected: item.id,
+      title: `将永久删除图库项 #${item.id}`,
+      description: '此图会从图库消失，其他员工也无法再用。仅当你是创建者或管理员时可通过校验。',
+    })
+  } catch { return }
   await galleryApi.remove(item.id)
   ElMessage.success('已删除')
   load()

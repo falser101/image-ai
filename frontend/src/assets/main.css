@@ -29,3 +29,29 @@ body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft
 .login-card { background: #fff; padding: 40px; border-radius: 12px; width: 380px; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
 .login-card h2 { margin: 0 0 24px; text-align: center; }
 .gradient-text { background: linear-gradient(135deg,#1890ff,#722ed1); -webkit-background-clip: text; color: transparent; font-weight: 600; }
+
+/* 二次确认弹窗：消息区里的描述 / 预期值 / 复制按钮 */
+.confirm-delete-message { line-height: 1.7; }
+.confirm-delete-desc { color: var(--el-text-color-regular); font-size: 13px; margin-bottom: 10px; }
+.confirm-delete-hint { color: var(--el-text-color-primary); font-size: 13px; }
+.confirm-delete-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--el-color-danger);
+  background: #fef0f0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+  word-break: break-all;
+}
+.confirm-delete-actions { margin-top: 10px; }
+.confirm-delete-copy-btn {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--el-color-primary);
+  background: #ecf5ff;
+  border: 1px solid #b3d8ff;
+  border-radius: 4px;
+  padding: 4px 10px;
+  transition: all .15s ease;
+}
+.confirm-delete-copy-btn:hover { background: #409eff; color: #fff; border-color: #409eff; }
