@@ -55,13 +55,9 @@ func (h *SellingPointHandler) CreateForProduct(c *gin.Context) {
 	utils.OK(c, created)
 }
 
+// List / ListByProduct / Get 公司共享：所有登录用户都能看
 func (h *SellingPointHandler) List(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	q := h.db.Model(&models.SellingPoint{})
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	if pid := c.Query("productId"); pid != "" {
 		q = q.Where("product_id = ?", pid)
 	}
@@ -74,34 +70,26 @@ func (h *SellingPointHandler) List(c *gin.Context) {
 }
 
 func (h *SellingPointHandler) ListByProduct(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	pid, _ := strconv.Atoi(c.Param("id"))
-	q := h.db.Model(&models.SellingPoint{}).Where("product_id = ?", pid)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var list []models.SellingPoint
-	q.Order("id asc").Find(&list)
+	h.db.Model(&models.SellingPoint{}).
+		Where("product_id = ?", pid).
+		Order("id asc").
+		Find(&list)
 	utils.OK(c, list)
 }
 
 func (h *SellingPointHandler) Get(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	id, _ := strconv.Atoi(c.Param("id"))
-	q := h.db.Model(&models.SellingPoint{}).Where("id = ?", id)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var p models.SellingPoint
-	if err := q.First(&p).Error; err != nil {
+	if err := h.db.First(&p, id).Error; err != nil {
 		utils.Fail(c, 404, "不存在")
 		return
 	}
 	utils.OK(c, p)
 }
 
+// Delete 员工只能删自己创建的卖点
 func (h *SellingPointHandler) Delete(c *gin.Context) {
 	uid, _ := c.Get("userId")
 	role, _ := c.Get("role")
@@ -110,7 +98,11 @@ func (h *SellingPointHandler) Delete(c *gin.Context) {
 	if role != "admin" {
 		q = q.Where("user_id = ?", uid)
 	}
-	q.Delete(&models.SellingPoint{})
+	res := q.Delete(&models.SellingPoint{})
+	if res.RowsAffected == 0 {
+		utils.Fail(c, 404, "不存在或无权访问")
+		return
+	}
 	utils.OK(c, nil)
 }
 

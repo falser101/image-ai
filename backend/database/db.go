@@ -25,6 +25,7 @@ func Init(cfg *config.Config) *gorm.DB {
 		&models.StylePreset{},
 		&models.ModelConfig{},
 		&models.OssConfig{},
+		&models.PromptSettings{},
 		&models.OperationLog{},
 		&models.AITask{},
 	); err != nil {

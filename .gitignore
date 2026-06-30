@@ -10,3 +10,17 @@ frontend/uploads/*
 !frontend/uploads/.gitkeep
 *.log
 .DS_Store
+
+# docker compose 运行时数据目录（SQLite + 上传图），备份靠 tar 这一个目录，不进 git
+data/
+!data/.gitkeep
+
+# 含 JWT_SECRET / ADMIN_PASSWORD，绝不能进仓库
+.env
+
+# 编辑器临时文件
+.idea/
+.vscode/
+*.swp
+*.swo
+

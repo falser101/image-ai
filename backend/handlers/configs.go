@@ -156,21 +156,51 @@ func NewOssConfigHandler(db *gorm.DB, cfg *config.Config) *OssConfigHandler {
 func (h *OssConfigHandler) Get(c *gin.Context) {
 	var m models.OssConfig
 	if err := h.db.First(&m).Error; err != nil {
-		utils.OK(c, models.OssConfig{Provider: "local"})
+		// 单例尚未写入：默认 local，但仍然把实际的上传目录带上，
+		// 前端展示「本地上传目录」用。
+		utils.OK(c, models.OssConfig{Provider: "local", LocalDir: h.cfg.UploadDir})
 		return
+	}
+	// local 模式下注入运行时上传目录（非 local provider 不返回 localDir）。
+	if m.Provider == "" || m.Provider == "local" {
+		m.LocalDir = h.cfg.UploadDir
+	} else {
+		m.LocalDir = ""
 	}
 	utils.OK(c, m)
 }
 
 func (h *OssConfigHandler) Update(c *gin.Context) {
 	var m models.OssConfig
-	c.ShouldBindJSON(&m)
+	if err := c.ShouldBindJSON(&m); err != nil {
+		utils.Fail(c, 400, "参数错误")
+		return
+	}
+	// 防止 provider 漏传：默认按 local 处理
+	if m.Provider == "" {
+		m.Provider = "local"
+	}
+	// local 模式下 OSS 字段清零，避免历史脏数据残留；非 local 模式保留用户输入。
+	if m.Provider == "local" {
+		m.Endpoint = ""
+		m.Bucket = ""
+		m.AccessKey = ""
+		m.SecretKey = ""
+		m.Region = ""
+		m.Prefix = ""
+		m.PublicHost = ""
+		m.Enabled = false
+	}
 	var existing models.OssConfig
 	if err := h.db.First(&existing).Error; err == nil {
 		m.ID = existing.ID
 		h.db.Save(&m)
 	} else {
 		h.db.Create(&m)
+	}
+	// 响应时再回填 localDir，保持和 Get 行为一致
+	if m.Provider == "local" {
+		m.LocalDir = h.cfg.UploadDir
 	}
 	utils.OK(c, m)
 }

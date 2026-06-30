@@ -48,11 +48,22 @@ type AnalyzeResult struct {
 	SellingPoints []string `json:"sellingPoints"`
 	Prompt        string   `json:"prompt"`
 	ProductName   string   `json:"productName"`
+	// TokenUsage 本次调用所消耗的 token（来自上游响应 usage；为零表示上游未返回或非计费接口）
+	TokenUsage TokenUsage `json:"tokenUsage"`
+}
+
+// TokenUsage 记录一次 AI 调用的 token 消耗；任一字段可空
+type TokenUsage struct {
+	Prompt     int `json:"prompt"`
+	Completion int `json:"completion"`
+	Total      int `json:"total"`
 }
 
 // Analyze 用视觉模型分析产品图，输出卖点与生图prompt
-// modelConfigID 非 nil 时用指定配置；否则自动选最新启用的视觉配置
-func (s *AIService) Analyze(ctx context.Context, userID uint, imageID uint, modelConfigID *uint) (*AnalyzeResult, *models.ModelConfig, error) {
+//   - modelConfigID 非 nil 时用指定配置；否则自动选最新启用的视觉配置
+//   - productName 不为空时作为强参考注入到 user 消息，帮助模型校验「图与名是否一致」
+//     （同一张图，当用户记录的产品名是 A 不应识别成 B）。仅产品表里某行有 Name 时传。
+func (s *AIService) Analyze(ctx context.Context, userID uint, imageID uint, modelConfigID *uint, productName string) (*AnalyzeResult, *models.ModelConfig, error) {
 	var img models.Image
 	if err := s.db.First(&img, imageID).Error; err != nil {
 		return nil, nil, err
@@ -97,25 +108,19 @@ func (s *AIService) Analyze(ctx context.Context, userID uint, imageID uint, mode
 
 	// system 指令：要求纯 JSON、中文卖点、中文生图 prompt（按要素结构化）。
 	// 单独放 system 比塞进 user 更稳，模型不会因为图片描述把指令冲掉。
-	const systemInstruction = `你是一名产品图分析助理 + AI 生图提示词工程师。请严格按以下 JSON 输出，**不要**使用 markdown 代码块、不要任何解释文字。
+	// 模板由管理员在「系统管理 → 提示词配置」维护，无内存缓存，改完立即生效。
+	systemInstruction, err := GetSystemInstruction(s.db)
+	if err != nil {
+		return nil, cfg, fmt.Errorf("读取提示词失败: %w", err)
+	}
 
-输出 schema：
-{
-  "productName": "产品中文名（2-8字，不含品牌）",
-  "sellingPoints": ["卖点1", "卖点2", "卖点3", "卖点4", "卖点5"],
-  "prompt": "中文生图 prompt（80-150 字）"
-}
-
-字段要求：
-- productName：简洁中文产品名，如「蓝牙耳机」「陶瓷茶壶」「户外帐篷」，**不要带品牌名**。
-- sellingPoints：4-6 条，每条 10-25 字，从外观 / 材质 / 工艺 / 功能 / 使用场景角度提炼，面向 C 端消费者。
-- prompt：中文生图 prompt，结构清晰、用逗号分隔，**不要用引号或代码块包裹**。必须包含以下五要素：
-  ① 主体：产品外观、颜色、材质、关键造型细节；
-  ② 光线：柔光 / 侧光 / 逆光 / 轮廓光 / 自然光 等具体光线类型；
-  ③ 构图与机位：俯拍 / 45 度 / 平视 / 产品居中 / 三分构图 等；
-  ④ 背景与场景：纯色背景（颜色）/ 生活场景（简述）/ 棚拍 等；
-  ⑤ 画面风格：极简产品摄影 / 商业广告 / 电影感 / 国潮 / 杂志风 等。`
-
+	// user prompt：图 + 文本。文本里把"产品名 hint"塞进去，让模型把图与已知的名
+	// 字比对 — 名称一致就保留，明显冲突就按实际图识别并在 prompt 里写明真实品类。
+	hintLine := ""
+	if pname := strings.TrimSpace(productName); pname != "" {
+		hintLine = fmt.Sprintf("用户告诉我们的产品名是：「%s」。请把它作为强参考：若图里商品明显就是这个品类（外观/材质/用途都吻合），直接沿用此名；若图与该名明显冲突（比如名字是「蓝牙耳机」但图是陶瓷茶壶），请按图真实内容判定并在返回的 productName 字段里给出你看到的实际品类名称。\n\n", pname)
+	}
+	userText := hintLine + "请按 system 指令严格输出 JSON。"
 	payload := map[string]any{
 		"model": cfg.ModelName,
 		"messages": []map[string]any{
@@ -124,7 +129,7 @@ func (s *AIService) Analyze(ctx context.Context, userID uint, imageID uint, mode
 				"role": "user",
 				"content": []map[string]any{
 					{"type": "image_url", "image_url": map[string]string{"url": fmt.Sprintf("data:%s;base64,%s", mimeType, b64)}},
-					{"type": "text", "text": "请按 system 指令严格输出 JSON。"},
+					{"type": "text", "text": userText},
 				},
 			},
 		},
@@ -150,6 +155,11 @@ func (s *AIService) Analyze(ctx context.Context, userID uint, imageID uint, mode
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &ar); err != nil {
 		return nil, cfg, fmt.Errorf("视觉模型响应 JSON 解析失败: %w", err)
@@ -161,6 +171,11 @@ func (s *AIService) Analyze(ctx context.Context, userID uint, imageID uint, mode
 	res, err := parseAnalyzeJSON(content)
 	if err != nil {
 		return nil, cfg, fmt.Errorf("视觉模型返回内容无法解析为 JSON: %w (原始: %s)", err, truncate(content, 200))
+	}
+	res.TokenUsage = TokenUsage{
+		Prompt:     ar.Usage.PromptTokens,
+		Completion: ar.Usage.CompletionTokens,
+		Total:      ar.Usage.TotalTokens,
 	}
 	return res, cfg, nil
 }
@@ -220,7 +235,8 @@ func parseAnalyzeJSON(s string) (*AnalyzeResult, error) {
 
 // GenerateResult 直接返回 Gallery
 type GenerateResult struct {
-	Gallery *models.Gallery
+	Gallery    *models.Gallery
+	TokenUsage TokenUsage // image_generation 通常不返回 usage，零值合理
 }
 
 // Generate 用生图模型生成图片；任何错误（无模型/无 Key/远程失败）都直接返回 error
@@ -285,7 +301,11 @@ func (s *AIService) callOpenAIImage(ctx context.Context, cfg *models.ModelConfig
 	}
 	// 保存结果图
 	filename := fmt.Sprintf("gen_%d_%s.png", time.Now().UnixNano(), randomHex(6))
-	outPath := filepath.Join(s.cfg.UploadDir, filename)
+	relPath := GeneratedImageRelPath(req.ProductID, filename)
+	outPath := ResolveUploadPath(s.cfg.UploadDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return nil, fmt.Errorf("创建生成图目录失败: %w", err)
+	}
 	if err := downloadTo(ir.Data[0].URL, ir.Data[0].B64JSON, outPath); err != nil {
 		return nil, fmt.Errorf("下载生成图失败: %w", err)
 	}
@@ -312,7 +332,7 @@ func (s *AIService) callMinimaxImage(ctx context.Context, cfg *models.ModelConfi
 	}
 	// 如果前端请求带 sourceImageId + useAsSubject=true，则用作品作为 subject_reference
 	if req.SourceImageID != nil && req.UseAsSubject {
-		ref, err := s.buildSubjectReference(*req.SourceImageID, userID)
+		ref, err := s.buildSubjectReference(*req.SourceImageID)
 		if err != nil {
 			return nil, fmt.Errorf("构建角色参考图失败: %w", err)
 		}
@@ -366,7 +386,11 @@ func (s *AIService) callMinimaxImage(ctx context.Context, cfg *models.ModelConfi
 		return nil, errors.New("生图响应里没有 image_urls/image_base64: " + truncate(string(raw), 200))
 	}
 	filename := fmt.Sprintf("gen_%d_%s.png", time.Now().UnixNano(), randomHex(6))
-	outPath := filepath.Join(s.cfg.UploadDir, filename)
+	relPath := GeneratedImageRelPath(req.ProductID, filename)
+	outPath := ResolveUploadPath(s.cfg.UploadDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return nil, fmt.Errorf("创建生成图目录失败: %w", err)
+	}
 	if err := downloadTo(imageURL, imageB64, outPath); err != nil {
 		return nil, fmt.Errorf("下载生成图失败: %w", err)
 	}
@@ -382,7 +406,7 @@ func (s *AIService) saveGeneratedFile(cfg *models.ModelConfig, req GenerateReque
 		SourceImageID: req.SourceImageID,
 		Filename:      filepath.Base(outPath),
 		Path:          outPath,
-		URL:           "/uploads/" + filepath.Base(outPath),
+		URL:           BuildImageURL(s.cfg.UploadDir, outPath),
 		Prompt:        req.Prompt,
 		ModelConfigID: &cfg.ID,
 		ModelName:     cfg.Name,
@@ -402,13 +426,11 @@ func (s *AIService) saveGeneratedFile(cfg *models.ModelConfig, req GenerateReque
 // buildSubjectReference 把本地图转成 MiniMax subject_reference 用的 image_file
 // 用 data:base64 内嵌，避免外网拉不到内网图片
 // MiniMax 官方约束：type 当前只接受 "character"（人像），其它值会返回 status_code=2013
-func (s *AIService) buildSubjectReference(imageID, userID uint) (*map[string]string, error) {
+// 公司共享模式：允许用任意员工的原图作为参考。
+func (s *AIService) buildSubjectReference(imageID uint) (*map[string]string, error) {
 	var img models.Image
 	if err := s.db.First(&img, imageID).Error; err != nil {
 		return nil, err
-	}
-	if img.UserID != userID {
-		return nil, errors.New("无权访问该参考图")
 	}
 	data, err := os.ReadFile(img.Path)
 	if err != nil {

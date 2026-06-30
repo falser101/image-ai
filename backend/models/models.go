@@ -84,11 +84,18 @@ type Gallery struct {
 }
 
 // StylePreset 风格预设
+//   - PromptCN 中文提示词：给人看的，写「白底/暖光/极简」这种自然语言描述，方便运营选风格。
+//   - PromptEN 英文提示词：给模型用的，写 "white background, soft light..." 这种 SD/MiniMax 风格结构化短语。
+//   - Prompt 老字段保留：兼容历史数据；新逻辑优先用 PromptEN，空时回退到 Prompt。
+//     保留 not null 是因为 SQLite 老 schema 已经把它建成了 NOT NULL 列，AutoMigrate 不会改列约束。
+//     前端提交新建时会把 Prompt = PromptEN 一并带上，确保不空。
 type StylePreset struct {
 	ID          uint       `gorm:"primaryKey" json:"id"`
 	Name        string     `gorm:"size:64;not null" json:"name"`
 	Description string     `gorm:"size:255" json:"description"`
-	Prompt      string     `gorm:"type:text;not null" json:"prompt"`
+	Prompt      string     `gorm:"type:text;not null" json:"prompt"` // 兼容老数据；新建前端会把 PromptEN 同步回写到此处
+	PromptCN    string     `gorm:"type:text" json:"promptCN"`       // 中文提示词（给人看）
+	PromptEN    string     `gorm:"type:text" json:"promptEN"`       // 英文提示词（给模型）
 	Negative    string     `gorm:"type:text" json:"negative"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
@@ -112,6 +119,9 @@ type ModelConfig struct {
 }
 
 // OssConfig OSS存储配置（单例）
+//
+// 注意：当前实现只存元信息，实际文件永远落本地 UploadDir；这里仅做切换占位与展示。
+// LocalDir 是运行时由 handler 注入的只读字段（gorm:"-"），不入库。
 type OssConfig struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	Provider   string    `gorm:"size:32" json:"provider"` // local | aliyun | tencent | aws
@@ -124,18 +134,36 @@ type OssConfig struct {
 	PublicHost string    `gorm:"size:255" json:"publicHost"`
 	Enabled    bool      `gorm:"default:false" json:"enabled"`
 	UpdatedAt  time.Time `json:"updatedAt"`
+
+	// LocalDir 由 handler 在 provider=local 时注入（来自 cfg.UploadDir）。
+	// 不入库，JSON 字段名驼峰给前端展示用。
+	LocalDir string `gorm:"-" json:"localDir,omitempty"`
+}
+
+// PromptSettings AI 调用提示词（单例）
+// 仅一条记录（id=1），管理员在「系统管理 → 提示词配置」里改；
+// Analyze 每次读 DB，没有缓存以确保管理员改完立即生效。
+type PromptSettings struct {
+	ID                uint      `gorm:"primaryKey" json:"id"`
+	SystemInstruction string    `gorm:"type:text" json:"systemInstruction"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	UpdatedBy         uint      `json:"updatedBy"`
 }
 
 // OperationLog 操作日志
 type OperationLog struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	UserID    uint      `gorm:"index" json:"userId"`
-	Username  string    `gorm:"size:64" json:"username"`
-	Action    string    `gorm:"size:64" json:"action"`
-	Resource  string    `gorm:"size:64" json:"resource"`
-	Detail    string    `gorm:"type:text" json:"detail"`
-	IP        string    `gorm:"size:64" json:"ip"`
-	CreatedAt time.Time `gorm:"index" json:"createdAt"`
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	UserID          uint      `gorm:"index" json:"userId"`
+	Username        string    `gorm:"size:64" json:"username"`
+	Action          string    `gorm:"size:64" json:"action"`     // POST / PUT / DELETE / LOGIN / ai.analyze / ai.generate
+	Resource        string    `gorm:"size:64" json:"resource"`   // 语义化标签：products / users / model-configs / model ...
+	ResourceID      string    `gorm:"size:32" json:"resourceId"` // 目标 ID 或标签（"image-01" 这类）
+	Detail          string    `gorm:"type:text" json:"detail"`   // 自由文本
+	IP              string    `gorm:"size:64" json:"ip"`
+	Tokens          int       `json:"tokens"`                    // 本次消耗的 token 总数；非 AI 调用为 0
+	TokensPrompt    int       `json:"tokensPrompt"`
+	TokensCompletion int      `json:"tokensCompletion"`
+	CreatedAt       time.Time `gorm:"index" json:"createdAt"`
 }
 
 // AITask AI任务（用于轮询）

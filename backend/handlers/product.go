@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/image-ai/backend/config"
@@ -31,11 +32,39 @@ type createProductReq struct {
 	ImageID uint   `json:"imageId"`
 }
 
+// Create 创建产品。公司共享模式下对全公司同名产品去重。
+//   - Name trim 后非空，且长度 1..128
+//   - Name 在 products 表里唯一（unscope，软删的不算）
+//   - 冲突返回 1005「产品名已存在」
+//   - 空名返回 400「产品名不能为空」
 func (h *ProductHandler) Create(c *gin.Context) {
 	uid, _ := c.Get("userId")
 	var req createProductReq
-	c.ShouldBindJSON(&req)
-	p := models.Product{UserID: uid.(uint), Name: req.Name}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.Fail(c, 400, "参数错误")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		utils.Fail(c, 400, "产品名不能为空")
+		return
+	}
+	if len(name) > 128 {
+		utils.Fail(c, 400, "产品名不能超过 128 字符")
+		return
+	}
+	var count int64
+	if err := h.db.Unscoped().Model(&models.Product{}).
+		Where("name = ?", name).
+		Count(&count).Error; err != nil {
+		utils.Fail(c, 500, "校验失败")
+		return
+	}
+	if count > 0 {
+		utils.Fail(c, 1005, "产品名已存在：「"+name+"」")
+		return
+	}
+	p := models.Product{UserID: uid.(uint), Name: name}
 	if req.ImageID > 0 {
 		p.ImageID = &req.ImageID
 	}
@@ -44,6 +73,23 @@ func (h *ProductHandler) Create(c *gin.Context) {
 		return
 	}
 	utils.OK(c, p)
+}
+
+// CheckName 看 name 是否被占用。前端实时去重（debounce 调）；不区分大小写无关，全等。
+// GET /api/products/check-name?name=xxx
+func (h *ProductHandler) CheckName(c *gin.Context) {
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" {
+		utils.OK(c, gin.H{"name": name, "exists": false, "valid": false})
+		return
+	}
+	if len(name) > 128 {
+		utils.OK(c, gin.H{"name": name, "exists": false, "valid": false, "reason": "产品名不能超过 128 字符"})
+		return
+	}
+	var count int64
+	h.db.Unscoped().Model(&models.Product{}).Where("name = ?", name).Count(&count)
+	utils.OK(c, gin.H{"name": name, "exists": count > 0, "valid": count == 0})
 }
 
 // ProductListItem 在 Product 基础上附带生成图统计：
@@ -59,9 +105,10 @@ type ProductListItem struct {
 	SourceImageCount  int    `json:"sourceImageCount"`
 }
 
-// fillGalleryStats 批量补齐 list 中每个产品的 GalleryCount / PreviewGalleryURL。
+// fillGalleryStats 批量补齐 list 中每个产品的 GalleryCount / PreviewGalleryURL / CoverImageURL / SourceImageCount。
+// 公司共享模式：跨员工统计，不按 user_id 过滤。
 // 用两条查询（一次 count 聚合 + 一次按 id desc 取最新），避免 N+1。
-func (h *ProductHandler) fillGalleryStats(uid uint, role string, products []models.Product) (countMap map[uint]int, previewMap map[uint]string, coverMap map[uint]string, sourceCountMap map[uint]int) {
+func (h *ProductHandler) fillGalleryStats(products []models.Product) (countMap map[uint]int, previewMap map[uint]string, coverMap map[uint]string, sourceCountMap map[uint]int) {
 	countMap = map[uint]int{}
 	previewMap = map[uint]string{}
 	coverMap = map[uint]string{}
@@ -73,31 +120,26 @@ func (h *ProductHandler) fillGalleryStats(uid uint, role string, products []mode
 	if len(ids) == 0 {
 		return
 	}
-	// 1) 每个 product 的 gallery 数（按 user_id 隔离）
+	// 1) 每个 product 的 gallery 数
 	type row struct {
 		ProductID uint
 		Cnt       int
 	}
-	cq := h.db.Model(&models.Gallery{}).
-		Select("product_id as product_id, count(*) as cnt").
-		Where("product_id IN ?", ids)
-	if role != "admin" {
-		cq = cq.Where("user_id = ?", uid)
-	}
 	var rows []row
-	cq.Group("product_id").Scan(&rows)
+	h.db.Model(&models.Gallery{}).
+		Select("product_id as product_id, count(*) as cnt").
+		Where("product_id IN ?", ids).
+		Group("product_id").
+		Scan(&rows)
 	for _, r := range rows {
 		countMap[r.ProductID] = r.Cnt
 	}
 	// 2) 每个 product 的最新一张 gallery（id desc 取首条）
-	pq := h.db.Model(&models.Gallery{}).
-		Where("product_id IN ?", ids).
-		Order("id desc")
-	if role != "admin" {
-		pq = pq.Where("user_id = ?", uid)
-	}
 	var gs []models.Gallery
-	pq.Find(&gs)
+	h.db.Model(&models.Gallery{}).
+		Where("product_id IN ?", ids).
+		Order("id desc").
+		Find(&gs)
 	for _, g := range gs {
 		if g.ProductID == nil {
 			continue
@@ -107,21 +149,19 @@ func (h *ProductHandler) fillGalleryStats(uid uint, role string, products []mode
 		}
 	}
 	// 3) 原图统计 + cover 图 URL
-	iq := h.db.Model(&models.Image{}).Where("product_id IN ?", ids)
-	if role != "admin" {
-		iq = iq.Where("user_id = ?", uid)
-	}
 	var imgs []models.Image
-	iq.Order("id asc").Find(&imgs)
+	h.db.Model(&models.Image{}).
+		Where("product_id IN ?", ids).
+		Order("id asc").
+		Find(&imgs)
 	for _, img := range imgs {
 		if img.ProductID == nil {
 			continue
 		}
 		sourceCountMap[*img.ProductID]++
-		// cover = 最早的一张（最新上传会覆盖 Product.ImageID，但 cover 仍用 product 表指向的）
-		// 实际渲染时优先用 coverMap，没设过才用 id asc 的第一张兜底
+		// cover 兜底：id asc 的第一张
 		if _, exists := coverMap[*img.ProductID]; !exists {
-			coverMap[*img.ProductID] = "/uploads/" + filepath.Base(img.Path)
+			coverMap[*img.ProductID] = services.BuildImageURL(h.cfg.UploadDir, img.Path)
 		}
 	}
 	// cover 优先用 Product.ImageID 指向的那张
@@ -129,7 +169,7 @@ func (h *ProductHandler) fillGalleryStats(uid uint, role string, products []mode
 		if p.ImageID != nil {
 			for _, img := range imgs {
 				if img.ID == *p.ImageID && img.ProductID != nil && *img.ProductID == p.ID {
-					coverMap[p.ID] = "/uploads/" + filepath.Base(img.Path)
+					coverMap[p.ID] = services.BuildImageURL(h.cfg.UploadDir, img.Path)
 					break
 				}
 			}
@@ -138,17 +178,12 @@ func (h *ProductHandler) fillGalleryStats(uid uint, role string, products []mode
 	return
 }
 
+// List 公司共享：所有人能看到所有产品
 func (h *ProductHandler) List(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
-	q := h.db.Model(&models.Product{})
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var products []models.Product
-	q.Order("id desc").Find(&products)
+	h.db.Order("id desc").Find(&products)
 
-	countMap, previewMap, coverMap, sourceCountMap := h.fillGalleryStats(uid.(uint), role.(string), products)
+	countMap, previewMap, coverMap, sourceCountMap := h.fillGalleryStats(products)
 	out := make([]ProductListItem, len(products))
 	for i, p := range products {
 		out[i] = ProductListItem{
@@ -162,31 +197,25 @@ func (h *ProductHandler) List(c *gin.Context) {
 	utils.OK(c, out)
 }
 
+// Get 公司共享：所有登录用户都能看任一产品详情。
 func (h *ProductHandler) Get(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	id, _ := strconv.Atoi(c.Param("id"))
-	q := h.db.Model(&models.Product{}).Where("id = ?", id)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var p models.Product
-	if err := q.First(&p).Error; err != nil {
+	if err := h.db.First(&p, id).Error; err != nil {
 		utils.Fail(c, 404, "产品不存在")
 		return
 	}
-	// 拉取该产品下所有原图，按 id 升序（最早的上传在前）
+	// 拉取该产品下所有原图，按 id 升序（最早的上传在前）。跨员工共享。
 	var imgs []models.Image
-	iq := h.db.Model(&models.Image{}).Where("product_id = ?", id)
-	if role != "admin" {
-		iq = iq.Where("user_id = ?", uid)
-	}
-	iq.Order("id asc").Find(&imgs)
+	h.db.Model(&models.Image{}).
+		Where("product_id = ?", id).
+		Order("id asc").
+		Find(&imgs)
 	sources := make([]SourceImageItem, 0, len(imgs))
 	for _, img := range imgs {
 		sources = append(sources, SourceImageItem{
 			ID:            img.ID,
-			URL:           "/uploads/" + filepath.Base(img.Path),
+			URL:           services.BuildImageURL(h.cfg.UploadDir, img.Path),
 			Prompt:        img.Prompt,
 			SellingPoints: parseSellingPtsJSON(img.SellingPts),
 			Analyzed:      img.Analyzed,
@@ -203,8 +232,8 @@ func (h *ProductHandler) Get(c *gin.Context) {
 		"createdAt":      p.CreatedAt,
 		"updatedAt":      p.UpdatedAt,
 		"sourceImages":   sources,
-		"galleryCount":   h.galleryCountFor(uid.(uint), role.(string), p.ID),
-		"previewGallery": h.previewGalleryFor(uid.(uint), role.(string), p.ID),
+		"galleryCount":   h.galleryCountFor(p.ID),
+		"previewGallery": h.previewGalleryFor(p.ID),
 	})
 }
 
@@ -229,28 +258,28 @@ func parseSellingPtsJSON(s string) []string {
 	return arr
 }
 
-func (h *ProductHandler) galleryCountFor(uid uint, role string, productID uint) int {
-	q := h.db.Model(&models.Gallery{}).Where("product_id = ?", productID)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
+// galleryCountFor / previewGalleryFor 公司共享：跨员工统计
+func (h *ProductHandler) galleryCountFor(productID uint) int {
 	var n int64
-	q.Count(&n)
+	h.db.Model(&models.Gallery{}).
+		Where("product_id = ?", productID).
+		Count(&n)
 	return int(n)
 }
 
-func (h *ProductHandler) previewGalleryFor(uid uint, role string, productID uint) string {
-	q := h.db.Model(&models.Gallery{}).Where("product_id = ?", productID).Order("id desc").Limit(1)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
+func (h *ProductHandler) previewGalleryFor(productID uint) string {
 	var g models.Gallery
-	if err := q.First(&g).Error; err != nil {
+	if err := h.db.Model(&models.Gallery{}).
+		Where("product_id = ?", productID).
+		Order("id desc").
+		Limit(1).
+		First(&g).Error; err != nil {
 		return ""
 	}
-	return "/uploads/" + filepath.Base(g.Path)
+	return services.BuildImageURL(h.cfg.UploadDir, g.Path)
 }
 
+// Delete 员工只能删自己创建的产品；管理员可删任意
 func (h *ProductHandler) Delete(c *gin.Context) {
 	uid, _ := c.Get("userId")
 	role, _ := c.Get("role")
@@ -259,11 +288,71 @@ func (h *ProductHandler) Delete(c *gin.Context) {
 	if role != "admin" {
 		q = q.Where("user_id = ?", uid)
 	}
-	if err := q.Delete(&models.Product{}).Error; err != nil {
+	res := q.Delete(&models.Product{})
+	if res.Error != nil {
 		utils.Fail(c, 500, "删除失败")
 		return
 	}
+	if res.RowsAffected == 0 {
+		utils.Fail(c, 404, "产品不存在或无权访问")
+		return
+	}
 	utils.OK(c, nil)
+}
+
+type updateProductReq struct {
+	Name string `json:"name"`
+}
+
+// Update 修改产品名。员工只能改自己的产品；管理员可改任意。
+// ImageID / Prompt / SellingPts 都是从最近一次上传反规范化出来的，不允许外部直接改。
+func (h *ProductHandler) Update(c *gin.Context) {
+	uid, _ := c.Get("userId")
+	role, _ := c.Get("role")
+	id, _ := strconv.Atoi(c.Param("id"))
+	var req updateProductReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.Fail(c, 400, "参数错误")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		utils.Fail(c, 400, "产品名不能为空")
+		return
+	}
+	if len(name) > 128 {
+		utils.Fail(c, 400, "产品名不能超过 128 字符")
+		return
+	}
+	var p models.Product
+	q := h.db.Where("id = ?", id)
+	if role != "admin" {
+		q = q.Where("user_id = ?", uid)
+	}
+	if err := q.First(&p).Error; err != nil {
+		utils.Fail(c, 404, "产品不存在或无权访问")
+		return
+	}
+	// 如果改名了，查重（排除自己）
+	if p.Name != name {
+		var dup int64
+		if err := h.db.Unscoped().Model(&models.Product{}).
+			Where("name = ? AND id <> ?", name, id).
+			Count(&dup).Error; err != nil {
+			utils.Fail(c, 500, "校验失败")
+			return
+		}
+		if dup > 0 {
+			utils.Fail(c, 1005, "产品名已存在：「"+name+"」")
+			return
+		}
+	}
+	p.Name = name
+	if err := h.db.Save(&p).Error; err != nil {
+		utils.Fail(c, 500, "更新失败")
+		return
+	}
+	utils.OK(c, p)
 }
 
 // UploadSourceImage 给产品上传一张原图，自动跑视觉模型解析卖点 + prompt，
@@ -298,16 +387,17 @@ func (h *ProductHandler) UploadSourceImage(c *gin.Context) {
 	}
 
 	// 落盘 + 建 Image 行
-	img, err := uploadImage(c, h.db, h.cfg)
+	img, err := uploadImage(c, h.db, h.cfg, &pid)
 	if err != nil {
 		utils.Fail(c, 400, "上传失败: "+err.Error())
 		return
 	}
 	img.ProductID = &pid
 
-	// 跑视觉模型。失败：回滚（删文件 + 删 Image 行），让用户重试
+	// 跑视觉模型。失败：回滚（删文件 + 删 Image 行），让用户重试。
+	// 把 product.Name 作为 hint 传进去，让 AI 把图和已知名字对齐 — 防止换图时识别错品类。
 	ai := services.NewAIService(h.db, h.cfg)
-	res, _, err := ai.Analyze(c.Request.Context(), uid.(uint), img.ID, modelCfgID)
+	res, _, err := ai.Analyze(c.Request.Context(), uid.(uint), img.ID, modelCfgID, product.Name)
 	if err != nil {
 		_ = os.Remove(img.Path)
 		h.db.Delete(img)
@@ -343,7 +433,7 @@ func (h *ProductHandler) UploadSourceImage(c *gin.Context) {
 	h.db.Model(&models.Image{}).Where("product_id = ?", pid).Count(&cnt)
 
 	utils.OK(c, gin.H{
-		"image":         imgResp(img),
+		"image":         imgResp(img, h.cfg.UploadDir),
 		"productId":     pid,
 		"imageCount":    cnt,
 		"sellingPoints": res.SellingPoints,
@@ -352,7 +442,7 @@ func (h *ProductHandler) UploadSourceImage(c *gin.Context) {
 }
 
 // imgResp 把 models.Image 渲染成给前端的精简视图（URL 是 /uploads/...，不漏 Path）
-func imgResp(img *models.Image) gin.H {
+func imgResp(img *models.Image, uploadDir string) gin.H {
 	var sp []string
 	_ = json.Unmarshal([]byte(img.SellingPts), &sp)
 	if sp == nil {
@@ -363,7 +453,7 @@ func imgResp(img *models.Image) gin.H {
 		"userId":        img.UserID,
 		"productId":     img.ProductID,
 		"filename":      img.Filename,
-		"url":           "/uploads/" + filepath.Base(img.Path),
+		"url":           services.BuildImageURL(uploadDir, img.Path),
 		"size":          img.Size,
 		"mimeType":      img.MimeType,
 		"prompt":        img.Prompt,
@@ -375,7 +465,8 @@ func imgResp(img *models.Image) gin.H {
 }
 
 // uploadImage 上传产品原图：自动创建 Image 记录，返回 imageId
-func uploadImage(c *gin.Context, db *gorm.DB, cfg *config.Config) (*models.Image, error) {
+// productID 决定落盘位置（products/{pid}/source/...）。可空，空时走 misc/source/。
+func uploadImage(c *gin.Context, db *gorm.DB, cfg *config.Config, productID *uint) (*models.Image, error) {
 	uid, _ := c.Get("userId")
 	file, err := c.FormFile("file")
 	if err != nil {
@@ -383,7 +474,12 @@ func uploadImage(c *gin.Context, db *gorm.DB, cfg *config.Config) (*models.Image
 	}
 	ext := filepath.Ext(file.Filename)
 	filename := uuid.NewString() + ext
-	out := filepath.Join(cfg.UploadDir, filename)
+	relPath := services.SourceImageRelPath(productID, filename)
+	out := services.ResolveUploadPath(cfg.UploadDir, relPath)
+	// 子目录可能不存在，先建
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return nil, err
+	}
 	if err := c.SaveUploadedFile(file, out); err != nil {
 		return nil, err
 	}

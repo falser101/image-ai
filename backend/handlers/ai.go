@@ -62,7 +62,7 @@ func (h *AIHandler) Analyze(c *gin.Context) {
 	}
 
 	// 3) 上传原图（在调视觉模型前落盘，失败也能看到图）
-	img, err := uploadImage(c, h.db, h.cfg)
+	img, err := uploadImage(c, h.db, h.cfg, &pid)
 	if err != nil {
 		utils.Fail(c, 400, "上传失败: "+err.Error())
 		return
@@ -80,7 +80,7 @@ func (h *AIHandler) Analyze(c *gin.Context) {
 	}
 	h.db.Create(&task)
 
-	res, usedCfg, err := h.ai.Analyze(c.Request.Context(), uid.(uint), img.ID, modelCfgID)
+	res, usedCfg, err := h.ai.Analyze(c.Request.Context(), uid.(uint), img.ID, modelCfgID, product.Name)
 	if err != nil {
 		task.Status = "failed"
 		task.Error = err.Error()
@@ -116,15 +116,65 @@ func (h *AIHandler) Analyze(c *gin.Context) {
 		img.ID, pid, string(jsonSP), res.Prompt, modelNameOf(usedCfg))
 	task.Progress = 100
 	h.db.Save(&task)
+	// AI 调用本身单独写一条 operation_logs（不走中间件），填上 token 消耗
+	h.recordAILog(c, uid.(uint), productNameOf(product), "ai.analyze", usedCfg, res.TokenUsage)
 	utils.OK(c, gin.H{
 		"taskId":        taskID,
 		"imageId":       img.ID,
 		"productId":     pid,
 		"sellingPoints": res.SellingPoints,
 		"prompt":        res.Prompt,
-		"imageUrl":      "/uploads/" + img.Filename,
+		"imageUrl":      services.BuildImageURL(h.cfg.UploadDir, img.Path),
 		"modelName":     modelNameOf(usedCfg),
 	})
+}
+
+// productNameOf 安全读 product name
+func productNameOf(p models.Product) string {
+	if p.Name == "" {
+		return fmt.Sprintf("#%d", p.ID)
+	}
+	return p.Name
+}
+
+// recordAILog 落一条 AI 调用日志到 operation_logs。
+// 失败也不应影响主业务流程，所以忽略 DB 错误。
+func (h *AIHandler) recordAILog(c *gin.Context, uid uint, target, action string, cfg *models.ModelConfig, usage services.TokenUsage) {
+	uname, _ := c.Get("username")
+	modelName := ""
+	if cfg != nil {
+		modelName = cfg.Name
+	}
+	detail := "调用视觉/生图模型「" + modelName + "」"
+	if target != "" {
+		detail += " · 目标：" + target
+	}
+	if usage.Total > 0 {
+		detail += fmt.Sprintf(" · token: prompt=%d completion=%d total=%d", usage.Prompt, usage.Completion, usage.Total)
+	}
+	resourceID := ""
+	if cfg != nil {
+		resourceID = modelName
+	}
+	h.db.Create(&models.OperationLog{
+		UserID:           uid,
+		Username:         asStringUsername(uname),
+		Action:           action,
+		Resource:         "model",
+		ResourceID:       resourceID,
+		Detail:           detail,
+		IP:               c.ClientIP(),
+		Tokens:           usage.Total,
+		TokensPrompt:     usage.Prompt,
+		TokensCompletion: usage.Completion,
+	})
+}
+
+func asStringUsername(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // modelNameOf 安全拿 ModelConfig 名字，避免 nil 解引用
@@ -179,14 +229,18 @@ func (h *AIHandler) Generate(c *gin.Context) {
 	if req.Height == 0 {
 		req.Height = 1024
 	}
-	// 风格合并
+	// 风格合并：优先用英文提示词（给模型的），空时回退到老 Prompt 字段，兼容历史数据
 	var styleName string
 	if req.StyleID != nil {
 		var sp models.StylePreset
 		if err := h.db.First(&sp, *req.StyleID).Error; err == nil {
 			styleName = sp.Name
-			if sp.Prompt != "" {
-				req.Prompt = req.Prompt + ", " + sp.Prompt
+			stylePrompt := sp.PromptEN
+			if stylePrompt == "" {
+				stylePrompt = sp.Prompt
+			}
+			if strings.TrimSpace(stylePrompt) != "" {
+				req.Prompt = req.Prompt + ", " + stylePrompt
 			}
 		}
 	}
@@ -219,21 +273,37 @@ func (h *AIHandler) Generate(c *gin.Context) {
 	task.Result = fmt.Sprintf(`{"galleryId":%d,"url":"/uploads/%s"}`, g.ID, g.Filename)
 	task.Progress = 100
 	h.db.Save(&task)
+	// AI 调用本身记一行（image_generation 通常不返回 usage，TokenUsage 为零值）
+	var targetName string
+	if g.ProductID != nil {
+		var p models.Product
+		if h.db.First(&p, *g.ProductID).Error == nil {
+			targetName = productNameOf(p)
+		}
+	}
+	var aiCfg *models.ModelConfig
+	if g.ModelConfigID != nil {
+		var mc models.ModelConfig
+		if h.db.First(&mc, *g.ModelConfigID).Error == nil {
+			aiCfg = &mc
+		}
+	}
+	h.recordAILog(c, uid.(uint), targetName, "ai.generate", aiCfg, res.TokenUsage)
 	utils.OK(c, gin.H{
 		"taskId":    taskID,
 		"galleryId": g.ID,
-		"imageUrl":  "/uploads/" + g.Filename,
+		"imageUrl":  services.BuildImageURL(h.cfg.UploadDir, g.Path),
 		"modelName": g.ModelName,
 		"styleName": g.StyleName,
 		"status":    g.Status,
 	})
 }
 
+// TaskStatus 公司共享：所有登录用户都能查任意 taskId 的状态/结果
 func (h *AIHandler) TaskStatus(c *gin.Context) {
-	uid, _ := c.Get("userId")
 	id := c.Param("id")
 	var t models.AITask
-	if err := h.db.Where("id = ? AND user_id = ?", id, uid).First(&t).Error; err != nil {
+	if err := h.db.Where("id = ?", id).First(&t).Error; err != nil {
 		utils.Fail(c, 404, "任务不存在")
 		return
 	}

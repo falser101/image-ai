@@ -1,11 +1,11 @@
 package handlers
 
 import (
-	"path/filepath"
 	"strconv"
 
 	"github.com/image-ai/backend/config"
 	"github.com/image-ai/backend/models"
+	"github.com/image-ai/backend/services"
 	"github.com/image-ai/backend/utils"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +22,8 @@ type GalleryListItem struct {
 }
 
 // resolveSourceImageURLs 批量查 SourceImageID 对应的 /uploads/<filename> 映射。
-func (h *GalleryHandler) resolveSourceImageURLs(uid uint, role string, galleries []models.Gallery) map[uint]string {
+// 公司共享：跨员工查找。
+func (h *GalleryHandler) resolveSourceImageURLs(galleries []models.Gallery) map[uint]string {
 	out := map[uint]string{}
 	ids := make([]uint, 0, len(galleries))
 	for _, g := range galleries {
@@ -33,21 +34,17 @@ func (h *GalleryHandler) resolveSourceImageURLs(uid uint, role string, galleries
 	if len(ids) == 0 {
 		return out
 	}
-	q := h.db.Model(&models.Image{}).Where("id IN ?", ids)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var imgs []models.Image
-	q.Find(&imgs)
+	h.db.Model(&models.Image{}).Where("id IN ?", ids).Find(&imgs)
 	for _, img := range imgs {
-		out[img.ID] = "/uploads/" + filepath.Base(img.Path)
+		out[img.ID] = services.BuildImageURL(h.cfg.UploadDir, img.Path)
 	}
 	return out
 }
 
 // resolveProductNames 批量查 ProductID 对应的产品名映射。
-// 用在 Gallery List/Get 里，给每条生成图补上所属产品名。
-func (h *GalleryHandler) resolveProductNames(uid uint, role string, galleries []models.Gallery) map[uint]string {
+// 公司共享：跨员工查找。
+func (h *GalleryHandler) resolveProductNames(galleries []models.Gallery) map[uint]string {
 	out := map[uint]string{}
 	ids := make([]uint, 0, len(galleries))
 	for _, g := range galleries {
@@ -58,12 +55,8 @@ func (h *GalleryHandler) resolveProductNames(uid uint, role string, galleries []
 	if len(ids) == 0 {
 		return out
 	}
-	q := h.db.Model(&models.Product{}).Where("id IN ?", ids)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var ps []models.Product
-	q.Find(&ps)
+	h.db.Model(&models.Product{}).Where("id IN ?", ids).Find(&ps)
 	for _, p := range ps {
 		out[p.ID] = p.Name
 	}
@@ -79,13 +72,9 @@ func NewImageHandler(db *gorm.DB, cfg *config.Config) *ImageHandler {
 	return &ImageHandler{db: db, cfg: cfg}
 }
 
+// List / Get 公司共享：所有登录用户都能看
 func (h *ImageHandler) List(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	q := h.db.Model(&models.Image{})
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	if pid := c.Query("productId"); pid != "" {
 		q = q.Where("product_id = ?", pid)
 	}
@@ -95,21 +84,16 @@ func (h *ImageHandler) List(c *gin.Context) {
 }
 
 func (h *ImageHandler) Get(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	id, _ := strconv.Atoi(c.Param("id"))
-	q := h.db.Model(&models.Image{}).Where("id = ?", id)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var img models.Image
-	if err := q.First(&img).Error; err != nil {
+	if err := h.db.First(&img, id).Error; err != nil {
 		utils.Fail(c, 404, "图片不存在")
 		return
 	}
 	utils.OK(c, img)
 }
 
+// Delete 员工只能删自己上传的原图
 func (h *ImageHandler) Delete(c *gin.Context) {
 	uid, _ := c.Get("userId")
 	role, _ := c.Get("role")
@@ -118,20 +102,19 @@ func (h *ImageHandler) Delete(c *gin.Context) {
 	if role != "admin" {
 		q = q.Where("user_id = ?", uid)
 	}
-	q.Delete(&models.Image{})
+	res := q.Delete(&models.Image{})
+	if res.RowsAffected == 0 {
+		utils.Fail(c, 404, "不存在或无权访问")
+		return
+	}
 	utils.OK(c, nil)
 }
 
+// ServeFile 公司共享：所有登录用户都能下载
 func (h *ImageHandler) ServeFile(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	id, _ := strconv.Atoi(c.Param("id"))
-	q := h.db.Model(&models.Image{}).Where("id = ?", id)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var img models.Image
-	if err := q.First(&img).Error; err != nil {
+	if err := h.db.First(&img, id).Error; err != nil {
 		utils.Fail(c, 404, "图片不存在")
 		return
 	}
@@ -147,13 +130,9 @@ func NewGalleryHandler(db *gorm.DB, cfg *config.Config) *GalleryHandler {
 	return &GalleryHandler{db: db, cfg: cfg}
 }
 
+// List 公司共享：所有登录用户都能看
 func (h *GalleryHandler) List(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	q := h.db.Model(&models.Gallery{})
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	if pid := c.Query("productId"); pid != "" {
 		q = q.Where("product_id = ?", pid)
 	}
@@ -170,8 +149,8 @@ func (h *GalleryHandler) List(c *gin.Context) {
 	q.Order("id desc").Limit(500).Find(&list)
 
 	// 批量补齐原图 URL + 产品名
-	srcMap := h.resolveSourceImageURLs(uid.(uint), role.(string), list)
-	prodMap := h.resolveProductNames(uid.(uint), role.(string), list)
+	srcMap := h.resolveSourceImageURLs(list)
+	prodMap := h.resolveProductNames(list)
 	out := make([]GalleryListItem, len(list))
 	for i, g := range list {
 		out[i] = GalleryListItem{Gallery: g}
@@ -185,31 +164,27 @@ func (h *GalleryHandler) List(c *gin.Context) {
 	utils.OK(c, out)
 }
 
+// Get 公司共享：所有登录用户都能看
 func (h *GalleryHandler) Get(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	id, _ := strconv.Atoi(c.Param("id"))
-	q := h.db.Model(&models.Gallery{}).Where("id = ?", id)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var g models.Gallery
-	if err := q.First(&g).Error; err != nil {
+	if err := h.db.First(&g, id).Error; err != nil {
 		utils.Fail(c, 404, "图库项不存在")
 		return
 	}
 	item := GalleryListItem{Gallery: g}
 	if g.SourceImageID != nil {
-		srcMap := h.resolveSourceImageURLs(uid.(uint), role.(string), []models.Gallery{g})
+		srcMap := h.resolveSourceImageURLs([]models.Gallery{g})
 		item.SourceImageURL = srcMap[*g.SourceImageID]
 	}
 	if g.ProductID != nil {
-		prodMap := h.resolveProductNames(uid.(uint), role.(string), []models.Gallery{g})
+		prodMap := h.resolveProductNames([]models.Gallery{g})
 		item.ProductName = prodMap[*g.ProductID]
 	}
 	utils.OK(c, item)
 }
 
+// Delete 员工只能删自己生成的图
 func (h *GalleryHandler) Delete(c *gin.Context) {
 	uid, _ := c.Get("userId")
 	role, _ := c.Get("role")
@@ -218,20 +193,19 @@ func (h *GalleryHandler) Delete(c *gin.Context) {
 	if role != "admin" {
 		q = q.Where("user_id = ?", uid)
 	}
-	q.Delete(&models.Gallery{})
+	res := q.Delete(&models.Gallery{})
+	if res.RowsAffected == 0 {
+		utils.Fail(c, 404, "不存在或无权访问")
+		return
+	}
 	utils.OK(c, nil)
 }
 
+// ServeFile 公司共享：所有登录用户都能下载
 func (h *GalleryHandler) ServeFile(c *gin.Context) {
-	uid, _ := c.Get("userId")
-	role, _ := c.Get("role")
 	id, _ := strconv.Atoi(c.Param("id"))
-	q := h.db.Model(&models.Gallery{}).Where("id = ?", id)
-	if role != "admin" {
-		q = q.Where("user_id = ?", uid)
-	}
 	var g models.Gallery
-	if err := q.First(&g).Error; err != nil {
+	if err := h.db.First(&g, id).Error; err != nil {
 		utils.Fail(c, 404, "图库项不存在")
 		return
 	}
